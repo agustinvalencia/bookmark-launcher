@@ -1,0 +1,12 @@
+gh:
+  url: https://github.com
+  desc: repos
+  tags:
+  - dev
+  - code
+yt:
+  url: https://youtube.com
+  desc: youknow
+  tags:
+  - videos
+  - fun
