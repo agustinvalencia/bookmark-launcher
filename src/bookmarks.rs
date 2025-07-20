@@ -92,7 +92,7 @@ pub fn handle_add_command(
     bookmarks.insert(key.clone(), new_bookmark);
     save_bookmarks(&bookmarks)?;
 
-    println!(" > Bookmark '{}' added.", key);
+    println!(" > Bookmark '{key}' added.");
     Ok(())
 }
 
@@ -102,7 +102,7 @@ pub fn handle_open_command(key: &str) -> Result<()> {
     if let Some(bookmark) = bookmarks.get(key) {
         println!("Opening '{}'  ({})", key, bookmark.url);
         webbrowser::open(&bookmark.url)
-            .with_context(|| format!("Failed to open URL for key '{}'", key))?;
+            .with_context(|| format!("Failed to open URL for key '{key}'"))?;
     } else {
         anyhow::bail!("Bookmark with key '{}' not found.", key);
     }
@@ -115,7 +115,7 @@ pub fn handle_delete_command(key: &str) -> Result<()> {
     if bookmarks.contains_key(key) {
         bookmarks.remove(key);
         save_bookmarks(&bookmarks)?;
-        println!("Bookmark '{}' deleted", key);
+        println!("Bookmark '{key}' deleted");
     } else {
         anyhow::bail!("Bookmark with key '{}' not found.", key);
     }
