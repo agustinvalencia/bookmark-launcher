@@ -13,6 +13,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
 
+      - name: Install formatter
+        run: rustup component add rustfmt
+
       - name: Check formatting
         run: cargo fmt -- --check
 
