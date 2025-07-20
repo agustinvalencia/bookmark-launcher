@@ -15,11 +15,10 @@ jobs:
 
       - name: Install formatter
         run: |
-          rustup component add rustfmt clippy miri
+          rustup component add rustfmt clippy 
           cargo --version
           cargo clippy --version
           cargo fmt --version
-          cargo miri --version
 
       - name: Check formatting
         run: cargo fmt -- --check
