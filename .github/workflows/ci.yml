@@ -13,9 +13,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Move to cargo project
-        run: cd bookmarker
-
       - name: Check formatting
         run: cargo fmt -- --check
 
