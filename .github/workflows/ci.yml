@@ -14,7 +14,7 @@ jobs:
         uses: dtolnay/rust-toolchain@nightly
 
       - name: Install formatter
-        run: rustup component add rustfmt clippy
+        run: rustup component add rustfmt clippy miri
 
       - name: Check formatting
         run: cargo fmt -- --check
