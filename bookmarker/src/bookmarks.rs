@@ -108,3 +108,16 @@ pub fn handle_open_command(key: &str) -> Result<()> {
     }
     Ok(())
 }
+
+pub fn handle_delete_command(key: &str) -> Result<()> {
+    let mut bookmarks = load_bookmarks()?;
+
+    if bookmarks.get(key).is_some() {
+        bookmarks.remove(key);
+        save_bookmarks(&bookmarks)?;
+        println!("Bookmark '{}' deleted", key);
+    } else {
+        anyhow::bail!("Bookmark with key '{}' not found.", key);
+    }
+    Ok(())
+}
