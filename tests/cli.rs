@@ -1,5 +1,4 @@
 use assert_cmd::prelude::*;
-use predicates::*;
 use std::fs;
 use std::process::Command;
 

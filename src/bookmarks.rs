@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -46,8 +46,8 @@ pub fn handle_list_command(tag: Option<String>) -> Result<()> {
     let bookmarks = load_bookmarks()?;
 
     println!(
-        "{:<10} | {:<40} | {:<40} | {}",
-        "Key", "URL", "Description", "Tags"
+        "{:<10} | {:<40} | {:<40} | Tags",
+        "Key", "URL", "Description",
     );
     println!("{}", "-".repeat(110));
 
@@ -112,7 +112,7 @@ pub fn handle_open_command(key: &str) -> Result<()> {
 pub fn handle_delete_command(key: &str) -> Result<()> {
     let mut bookmarks = load_bookmarks()?;
 
-    if bookmarks.get(key).is_some() {
+    if bookmarks.contains_key(key) {
         bookmarks.remove(key);
         save_bookmarks(&bookmarks)?;
         println!("Bookmark '{}' deleted", key);
