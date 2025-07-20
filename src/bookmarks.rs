@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use home::home_dir;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -16,7 +17,9 @@ pub struct Bookmark {
 pub type Bookmarks = HashMap<String, Bookmark>;
 
 fn get_bookmarks_path() -> Result<PathBuf> {
-    Ok(PathBuf::from("bookmarks.yaml"))
+    let home = home_dir().context("Failed to find the home directory")?;
+    let config_dir = home.join(".config").join("bookmarker");
+    Ok(config_dir.join("bookmarks.yaml"))
 }
 
 pub fn load_bookmarks() -> Result<Bookmarks> {
@@ -36,7 +39,19 @@ pub fn load_bookmarks() -> Result<Bookmarks> {
 
 pub fn save_bookmarks(bookmarks: &Bookmarks) -> Result<()> {
     let path = get_bookmarks_path()?;
+    // Create the parent directory if it is not there
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create config directory at '{}'",
+                parent.display()
+            )
+        })?;
+    }
+
     let yaml_string = serde_yaml::to_string(bookmarks)?;
+
+    // All good to go
     fs::write(&path, yaml_string)
         .with_context(|| format!("Failed to write bookmarks to '{}'", path.display()))?;
     Ok(())
