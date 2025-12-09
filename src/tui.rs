@@ -105,11 +105,10 @@ impl App {
             .enumerate()
             .filter_map(|(i, bm)| {
                 // Tag filter
-                if let Some(ref tag) = self.tag_filter {
-                    if !bm.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                if let Some(ref tag) = self.tag_filter
+                    && !bm.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
                         return None;
                     }
-                }
 
                 // Fuzzy search
                 if query.is_empty() {
@@ -121,10 +120,6 @@ impl App {
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|x| {
-                // Sort by score descending, then by name
-                x
-            })
             .collect::<Vec<_>>()
             .into_iter()
             .fold(Vec::new(), |mut acc, (i, score)| {
@@ -261,13 +256,13 @@ impl App {
 }
 
 fn fuzzy_score(pattern: &[char], bookmark: &Bookmark) -> i64 {
-    let name_score = fuzzy_match(&pattern, &bookmark.name.to_lowercase());
-    let url_score = fuzzy_match(&pattern, &bookmark.url.to_lowercase());
-    let desc_score = fuzzy_match(&pattern, &bookmark.desc.to_lowercase());
+    let name_score = fuzzy_match(pattern, &bookmark.name.to_lowercase());
+    let url_score = fuzzy_match(pattern, &bookmark.url.to_lowercase());
+    let desc_score = fuzzy_match(pattern, &bookmark.desc.to_lowercase());
     let tag_score = bookmark
         .tags
         .iter()
-        .map(|t| fuzzy_match(&pattern, &t.to_lowercase()))
+        .map(|t| fuzzy_match(pattern, &t.to_lowercase()))
         .max()
         .unwrap_or(-1);
 
