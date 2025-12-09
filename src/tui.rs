@@ -1,355 +1,290 @@
 use crate::bookmarks::{
-    Bookmarks, add_bookmark, delete_bookmark, get_all_tags, load_bookmarks, save_bookmarks,
-    update_bookmark,
+    Bookmark, Bookmarks, add_bookmark, delete_bookmark, get_all_tags, load_bookmarks,
+    save_bookmarks, update_bookmark,
 };
-use cursive::Cursive;
-use cursive::event::Key;
-use cursive::theme::{BorderStyle, PaletteColor, Theme};
-use cursive::traits::*;
-use cursive::views::{Dialog, EditView, LinearLayout, OnEventView, Panel, SelectView, TextView};
-use std::cell::RefCell;
-use std::rc::Rc;
+use anyhow::Result;
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Frame, Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+};
+use std::io;
 
-const BOOKMARK_LIST_NAME: &str = "bookmark_list";
-const SEARCH_INPUT_NAME: &str = "search_input";
-
-// Catppuccin Mocha palette
-mod catppuccin {
-    use cursive::theme::Color;
+// Catppuccin Mocha colors
+mod colors {
+    use ratatui::style::Color;
 
     pub const BASE: Color = Color::Rgb(30, 30, 46);
-    pub const CRUST: Color = Color::Rgb(17, 17, 27);
-    pub const TEXT: Color = Color::Rgb(205, 214, 244);
-    pub const SUBTEXT0: Color = Color::Rgb(166, 173, 200);
     pub const SURFACE0: Color = Color::Rgb(49, 50, 68);
     pub const SURFACE1: Color = Color::Rgb(69, 71, 90);
-    pub const OVERLAY0: Color = Color::Rgb(108, 112, 134);
+    pub const TEXT: Color = Color::Rgb(205, 214, 244);
+    pub const SUBTEXT0: Color = Color::Rgb(166, 173, 200);
     pub const LAVENDER: Color = Color::Rgb(180, 190, 254);
     pub const MAUVE: Color = Color::Rgb(203, 166, 247);
-    pub const PINK: Color = Color::Rgb(245, 194, 231);
+    pub const RED: Color = Color::Rgb(243, 139, 168);
+    pub const GREEN: Color = Color::Rgb(166, 227, 161);
 }
 
-fn catppuccin_theme() -> Theme {
-    let mut theme = Theme {
-        shadow: false,
-        borders: BorderStyle::Simple,
-        ..Default::default()
-    };
-
-    theme.palette[PaletteColor::Background] = catppuccin::BASE;
-    theme.palette[PaletteColor::View] = catppuccin::BASE;
-    theme.palette[PaletteColor::Primary] = catppuccin::TEXT;
-    theme.palette[PaletteColor::Secondary] = catppuccin::SUBTEXT0;
-    theme.palette[PaletteColor::Tertiary] = catppuccin::OVERLAY0;
-    theme.palette[PaletteColor::TitlePrimary] = catppuccin::MAUVE;
-    theme.palette[PaletteColor::TitleSecondary] = catppuccin::PINK;
-    theme.palette[PaletteColor::Highlight] = catppuccin::SURFACE1;
-    theme.palette[PaletteColor::HighlightInactive] = catppuccin::SURFACE0;
-    theme.palette[PaletteColor::HighlightText] = catppuccin::LAVENDER;
-    theme.palette[PaletteColor::Shadow] = catppuccin::CRUST;
-
-    theme
+#[derive(PartialEq, Clone)]
+enum Mode {
+    Normal,
+    Search,
+    Add(AddField),
+    Edit(AddField),
+    Delete,
+    TagFilter,
 }
 
-pub fn run_tui() -> anyhow::Result<()> {
-    let bookmarks = load_bookmarks()?;
-    let bookmarks = Rc::new(RefCell::new(bookmarks));
-    let filter = Rc::new(RefCell::new(String::new()));
-    let tag_filter = Rc::new(RefCell::new(Option::<String>::None));
-    let search_active = Rc::new(RefCell::new(false));
+#[derive(PartialEq, Clone)]
+enum AddField {
+    Name,
+    Url,
+    Desc,
+    Tags,
+}
 
-    let mut siv = cursive::default();
+struct App {
+    bookmarks: Bookmarks,
+    filtered_indices: Vec<usize>,
+    list_state: ListState,
+    mode: Mode,
+    search_query: String,
+    tag_filter: Option<String>,
+    tag_list_state: ListState,
+    // Form fields for add/edit
+    form_name: String,
+    form_url: String,
+    form_desc: String,
+    form_tags: String,
+    edit_index: Option<usize>,
+    should_quit: bool,
+    url_to_open: Option<String>,
+}
 
-    siv.set_theme(catppuccin_theme());
-
-    siv.set_user_data(AppState {
-        bookmarks: Rc::clone(&bookmarks),
-        filter: Rc::clone(&filter),
-        tag_filter: Rc::clone(&tag_filter),
-        search_active: Rc::clone(&search_active),
-    });
-
-    build_main_view(&mut siv);
-
-    siv.add_global_callback('q', |s| {
-        let state = s.user_data::<AppState>().unwrap();
-        if !*state.search_active.borrow() {
-            s.quit();
+impl App {
+    fn new(bookmarks: Bookmarks) -> Self {
+        let filtered_indices: Vec<usize> = (0..bookmarks.len()).collect();
+        let mut list_state = ListState::default();
+        if !filtered_indices.is_empty() {
+            list_state.select(Some(0));
         }
-    });
 
-    siv.add_global_callback(Key::Esc, |s| {
-        let state = s.user_data::<AppState>().unwrap();
-        if *state.search_active.borrow() {
-            *state.search_active.borrow_mut() = false;
-            *state.filter.borrow_mut() = String::new();
-            build_main_view(s);
-        } else {
-            s.quit();
-        }
-    });
-
-    siv.run();
-    Ok(())
-}
-
-struct AppState {
-    bookmarks: Rc<RefCell<Bookmarks>>,
-    filter: Rc<RefCell<String>>,
-    tag_filter: Rc<RefCell<Option<String>>>,
-    search_active: Rc<RefCell<bool>>,
-}
-
-fn build_main_view(siv: &mut Cursive) {
-    siv.pop_layer();
-
-    let state = siv.user_data::<AppState>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-    let filter = state.filter.borrow().clone();
-    let tag_filter = state.tag_filter.borrow().clone();
-    let search_active = *state.search_active.borrow();
-
-    let mut select = SelectView::<String>::new().on_submit(on_select_bookmark);
-
-    let mut items: Vec<(String, String, i64)> = bookmarks
-        .iter()
-        .filter_map(|(key, bm)| {
-            let matches_tag = tag_filter
-                .as_ref()
-                .is_none_or(|t| bm.tags.iter().any(|tag| tag.eq_ignore_ascii_case(t)));
-
-            if !matches_tag {
-                return None;
-            }
-
-            let score = if filter.is_empty() {
-                0
-            } else {
-                fuzzy_score(&filter, key, &bm.url, &bm.desc, &bm.tags)
-            };
-
-            if !filter.is_empty() && score < 0 {
-                return None;
-            }
-
-            let tags_str = if bm.tags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", bm.tags.join(", "))
-            };
-            let label = format!(
-                "{:<12} {:<50} {}{}",
-                key,
-                truncate(&bm.url, 50),
-                truncate(&bm.desc, 30),
-                tags_str
-            );
-            Some((label, key.clone(), score))
-        })
-        .collect();
-
-    // Sort by score (descending) then by key (ascending)
-    items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-
-    for (label, key, _) in items {
-        select.add_item(label, key);
-    }
-
-    if select.is_empty() {
-        if filter.is_empty() {
-            select.add_item("(no bookmarks - press 'a' to add one)", String::new());
-        } else {
-            select.add_item("(no matches)", String::new());
+        Self {
+            bookmarks,
+            filtered_indices,
+            list_state,
+            mode: Mode::Normal,
+            search_query: String::new(),
+            tag_filter: None,
+            tag_list_state: ListState::default(),
+            form_name: String::new(),
+            form_url: String::new(),
+            form_desc: String::new(),
+            form_tags: String::new(),
+            edit_index: None,
+            should_quit: false,
+            url_to_open: None,
         }
     }
 
-    let select = select.with_name(BOOKMARK_LIST_NAME);
+    fn update_filter(&mut self) {
+        let query = self.search_query.to_lowercase();
+        let query_chars: Vec<char> = query.chars().collect();
 
-    let tag_display = if let Some(t) = tag_filter.as_ref() {
-        format!(" [tag: {}]", t)
-    } else {
-        String::new()
-    };
-
-    let title = format!("Bookmarks{}", tag_display);
-
-    drop(bookmarks);
-
-    let select = OnEventView::new(select)
-        .on_event('a', |s| {
-            let state = s.user_data::<AppState>().unwrap();
-            if !*state.search_active.borrow() {
-                show_add_dialog(s);
-            }
-        })
-        .on_event('e', |s| {
-            let state = s.user_data::<AppState>().unwrap();
-            if !*state.search_active.borrow() {
-                show_edit_dialog(s);
-            }
-        })
-        .on_event('d', |s| {
-            let state = s.user_data::<AppState>().unwrap();
-            if !*state.search_active.borrow() {
-                show_delete_dialog(s);
-            }
-        })
-        .on_event('/', |s| {
-            let state = s.user_data::<AppState>().unwrap();
-            if !*state.search_active.borrow() {
-                *state.search_active.borrow_mut() = true;
-                build_main_view(s);
-                s.focus_name(SEARCH_INPUT_NAME).ok();
-            }
-        })
-        .on_event('t', |s| {
-            let state = s.user_data::<AppState>().unwrap();
-            if !*state.search_active.borrow() {
-                show_tag_filter_dialog(s);
-            }
-        });
-
-    let help_text = if search_active {
-        "Type to filter | Enter: Select | Esc: Cancel search"
-    } else {
-        "Enter: Open | a: Add | e: Edit | d: Delete | /: Search | t: Tags | q: Quit"
-    };
-
-    let mut layout =
-        LinearLayout::vertical().child(Panel::new(select.scrollable().full_screen()).title(title));
-
-    if search_active {
-        let search_input = EditView::new()
-            .content(&filter)
-            .on_edit(|s, text, _| {
-                let state = s.user_data::<AppState>().unwrap();
-                *state.filter.borrow_mut() = text.to_string();
-                update_bookmark_list(s);
-            })
-            .on_submit(|s, _| {
-                // When Enter is pressed, try to open the selected bookmark
-                if let Some(key) = get_selected_key(s)
-                    && !key.is_empty()
-                {
-                    on_select_bookmark(s, &key);
-                }
-            })
-            .with_name(SEARCH_INPUT_NAME)
-            .full_width();
-
-        layout.add_child(
-            LinearLayout::horizontal()
-                .child(TextView::new("> "))
-                .child(search_input),
-        );
-    }
-
-    layout.add_child(TextView::new(help_text));
-
-    siv.add_fullscreen_layer(layout);
-
-    if search_active {
-        siv.focus_name(SEARCH_INPUT_NAME).ok();
-    }
-}
-
-fn update_bookmark_list(siv: &mut Cursive) {
-    let (items, filter_empty) = {
-        let state = siv.user_data::<AppState>().unwrap();
-        let bookmarks = state.bookmarks.borrow();
-        let filter = state.filter.borrow().clone();
-        let tag_filter = state.tag_filter.borrow().clone();
-
-        let mut items: Vec<(String, String, i64)> = bookmarks
+        self.filtered_indices = self
+            .bookmarks
             .iter()
-            .filter_map(|(key, bm)| {
-                let matches_tag = tag_filter
-                    .as_ref()
-                    .is_none_or(|t| bm.tags.iter().any(|tag| tag.eq_ignore_ascii_case(t)));
-
-                if !matches_tag {
-                    return None;
+            .enumerate()
+            .filter_map(|(i, bm)| {
+                // Tag filter
+                if let Some(ref tag) = self.tag_filter {
+                    if !bm.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                        return None;
+                    }
                 }
 
-                let score = if filter.is_empty() {
-                    0
-                } else {
-                    fuzzy_score(&filter, key, &bm.url, &bm.desc, &bm.tags)
-                };
-
-                if !filter.is_empty() && score < 0 {
-                    return None;
+                // Fuzzy search
+                if query.is_empty() {
+                    return Some((i, 0i64));
                 }
 
-                let tags_str = if bm.tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", bm.tags.join(", "))
-                };
-                let label = format!(
-                    "{:<12} {:<50} {}{}",
-                    key,
-                    truncate(&bm.url, 50),
-                    truncate(&bm.desc, 30),
-                    tags_str
-                );
-                Some((label, key.clone(), score))
+                let score = fuzzy_score(&query_chars, bm);
+                if score >= 0 { Some((i, score)) } else { None }
             })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|x| {
+                // Sort by score descending, then by name
+                x
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .fold(Vec::new(), |mut acc, (i, score)| {
+                acc.push((i, score));
+                acc
+            })
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .fold(Vec::new(), |mut acc, x| {
+                acc.push(x);
+                acc.sort_by(|a, b| b.1.cmp(&a.1));
+                acc
+            })
+            .into_iter()
+            .map(|(i, _)| i)
             .collect();
 
-        items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-
-        (items, filter.is_empty())
-    };
-
-    siv.call_on_name(BOOKMARK_LIST_NAME, |view: &mut SelectView<String>| {
-        view.clear();
-
-        for (label, key, _) in items {
-            view.add_item(label, key);
+        // Reset selection
+        if self.filtered_indices.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(0));
         }
+    }
 
-        if view.is_empty() {
-            if filter_empty {
-                view.add_item("(no bookmarks - press 'a' to add one)", String::new());
-            } else {
-                view.add_item("(no matches)", String::new());
+    fn selected_bookmark(&self) -> Option<&Bookmark> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.filtered_indices.get(i))
+            .and_then(|&idx| self.bookmarks.get(idx))
+    }
+
+    fn selected_index(&self) -> Option<usize> {
+        self.list_state
+            .selected()
+            .and_then(|i| self.filtered_indices.get(i).copied())
+    }
+
+    fn next(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => (i + 1) % self.filtered_indices.len(),
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    fn previous(&mut self) {
+        if self.filtered_indices.is_empty() {
+            return;
+        }
+        let i = match self.list_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.filtered_indices.len() - 1
+                } else {
+                    i - 1
+                }
             }
+            None => 0,
+        };
+        self.list_state.select(Some(i));
+    }
+
+    fn clear_form(&mut self) {
+        self.form_name.clear();
+        self.form_url.clear();
+        self.form_desc.clear();
+        self.form_tags.clear();
+        self.edit_index = None;
+    }
+
+    fn start_add(&mut self) {
+        self.clear_form();
+        self.mode = Mode::Add(AddField::Name);
+    }
+
+    fn start_edit(&mut self) {
+        if let Some(bm) = self.selected_bookmark().cloned() {
+            self.edit_index = self.selected_index();
+            self.form_name = bm.name;
+            self.form_url = bm.url;
+            self.form_desc = bm.desc;
+            self.form_tags = bm.tags.join(", ");
+            self.mode = Mode::Edit(AddField::Name);
         }
-    });
+    }
+
+    fn save_bookmark(&mut self) {
+        let tags: Vec<String> = self
+            .form_tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let bookmark = Bookmark {
+            name: self.form_name.clone(),
+            url: self.form_url.clone(),
+            desc: self.form_desc.clone(),
+            tags,
+        };
+
+        if let Some(idx) = self.edit_index {
+            update_bookmark(&mut self.bookmarks, idx, bookmark);
+        } else {
+            add_bookmark(&mut self.bookmarks, bookmark);
+        }
+
+        let _ = save_bookmarks(&self.bookmarks);
+        self.clear_form();
+        self.mode = Mode::Normal;
+        self.update_filter();
+    }
+
+    fn delete_selected(&mut self) {
+        if let Some(idx) = self.selected_index() {
+            delete_bookmark(&mut self.bookmarks, idx);
+            let _ = save_bookmarks(&self.bookmarks);
+            self.update_filter();
+        }
+        self.mode = Mode::Normal;
+    }
+
+    fn open_selected(&mut self) {
+        if let Some(bm) = self.selected_bookmark() {
+            self.url_to_open = Some(bm.url.clone());
+            self.should_quit = true;
+        }
+    }
 }
 
-/// Fuzzy matching score - returns negative if no match, higher scores are better matches
-fn fuzzy_score(pattern: &str, key: &str, url: &str, desc: &str, tags: &[String]) -> i64 {
-    let pattern_lower = pattern.to_lowercase();
-    let pattern_chars: Vec<char> = pattern_lower.chars().collect();
-
-    // Check each field and return the best score
-    let key_score = fuzzy_match_score(&pattern_chars, &key.to_lowercase());
-    let url_score = fuzzy_match_score(&pattern_chars, &url.to_lowercase());
-    let desc_score = fuzzy_match_score(&pattern_chars, &desc.to_lowercase());
-    let tags_score = tags
+fn fuzzy_score(pattern: &[char], bookmark: &Bookmark) -> i64 {
+    let name_score = fuzzy_match(&pattern, &bookmark.name.to_lowercase());
+    let url_score = fuzzy_match(&pattern, &bookmark.url.to_lowercase());
+    let desc_score = fuzzy_match(&pattern, &bookmark.desc.to_lowercase());
+    let tag_score = bookmark
+        .tags
         .iter()
-        .map(|t| fuzzy_match_score(&pattern_chars, &t.to_lowercase()))
+        .map(|t| fuzzy_match(&pattern, &t.to_lowercase()))
         .max()
         .unwrap_or(-1);
 
-    // Prioritize key matches, then url, then desc, then tags
-    if key_score >= 0 {
-        key_score + 1000
+    if name_score >= 0 {
+        name_score + 1000
     } else if url_score >= 0 {
         url_score + 500
     } else if desc_score >= 0 {
         desc_score + 100
-    } else if tags_score >= 0 {
-        tags_score
+    } else if tag_score >= 0 {
+        tag_score
     } else {
         -1
     }
 }
 
-/// Score a fuzzy match - returns -1 if no match, otherwise a score based on match quality
-fn fuzzy_match_score(pattern: &[char], text: &str) -> i64 {
+fn fuzzy_match(pattern: &[char], text: &str) -> i64 {
     if pattern.is_empty() {
         return 0;
     }
@@ -357,36 +292,32 @@ fn fuzzy_match_score(pattern: &[char], text: &str) -> i64 {
     let text_chars: Vec<char> = text.chars().collect();
     let mut pattern_idx = 0;
     let mut score: i64 = 0;
-    let mut last_match_idx: Option<usize> = None;
-    let mut consecutive_bonus = 0;
+    let mut last_match: Option<usize> = None;
+    let mut consecutive = 0i64;
 
     for (i, &c) in text_chars.iter().enumerate() {
         if pattern_idx < pattern.len() && c == pattern[pattern_idx] {
-            // Bonus for consecutive matches
-            if let Some(last) = last_match_idx {
+            if let Some(last) = last_match {
                 if i == last + 1 {
-                    consecutive_bonus += 10;
+                    consecutive += 10;
                 } else {
-                    consecutive_bonus = 0;
+                    consecutive = 0;
                 }
             }
 
-            // Bonus for matching at word boundaries
-            let word_boundary_bonus = if i == 0
+            let boundary_bonus = if i == 0
                 || text_chars
-                    .get(i - 1)
-                    .is_some_and(|&c| c == '/' || c == '.' || c == '-' || c == '_' || c == ' ')
+                    .get(i.wrapping_sub(1))
+                    .is_some_and(|&c| matches!(c, '/' | '.' | '-' | '_' | ' '))
             {
                 20
             } else {
                 0
             };
 
-            // Bonus for early matches
             let position_bonus = 10 - (i.min(10) as i64);
-
-            score += 10 + consecutive_bonus + word_boundary_bonus + position_bonus;
-            last_match_idx = Some(i);
+            score += 10 + consecutive + boundary_bonus + position_bonus;
+            last_match = Some(i);
             pattern_idx += 1;
         }
     }
@@ -398,808 +329,490 @@ fn fuzzy_match_score(pattern: &[char], text: &str) -> i64 {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max - 3])
-    } else {
-        s.to_string()
-    }
-}
-
-fn on_select_bookmark(siv: &mut Cursive, key: &String) {
-    if key.is_empty() {
-        return;
-    }
-
-    let state = siv.user_data::<AppState>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-
-    if let Some(bm) = bookmarks.get(key) {
-        let url = bm.url.clone();
-        drop(bookmarks);
-
-        // Quit first, then open the browser
-        siv.quit();
-
-        // Schedule the browser open after quit
-        siv.set_user_data(Some(url));
-    }
-}
-
-pub fn run_tui_and_open() -> anyhow::Result<Option<String>> {
+pub fn run_tui_and_open() -> Result<Option<String>> {
     let bookmarks = load_bookmarks()?;
-    let bookmarks = Rc::new(RefCell::new(bookmarks));
-    let filter = Rc::new(RefCell::new(String::new()));
-    let tag_filter = Rc::new(RefCell::new(Option::<String>::None));
-    let search_active = Rc::new(RefCell::new(false));
-    let url_to_open: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
 
-    let mut siv = cursive::default();
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
 
-    siv.set_theme(catppuccin_theme());
+    let mut app = App::new(bookmarks);
+    let result = run_app(&mut terminal, &mut app);
 
-    let url_to_open_clone = Rc::clone(&url_to_open);
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
 
-    siv.set_user_data(AppStateWithUrl {
-        bookmarks: Rc::clone(&bookmarks),
-        filter: Rc::clone(&filter),
-        tag_filter: Rc::clone(&tag_filter),
-        search_active: Rc::clone(&search_active),
-        url_to_open: url_to_open_clone,
-    });
-
-    build_main_view_with_url(&mut siv);
-
-    siv.add_global_callback('q', |s| {
-        let state = s.user_data::<AppStateWithUrl>().unwrap();
-        if !*state.search_active.borrow() {
-            s.quit();
-        }
-    });
-
-    siv.add_global_callback(Key::Esc, |s| {
-        let state = s.user_data::<AppStateWithUrl>().unwrap();
-        if *state.search_active.borrow() {
-            *state.search_active.borrow_mut() = false;
-            *state.filter.borrow_mut() = String::new();
-            build_main_view_with_url(s);
-        } else {
-            s.quit();
-        }
-    });
-
-    siv.run();
-
-    Ok(url_to_open.borrow().clone())
+    result?;
+    Ok(app.url_to_open)
 }
 
-struct AppStateWithUrl {
-    bookmarks: Rc<RefCell<Bookmarks>>,
-    filter: Rc<RefCell<String>>,
-    tag_filter: Rc<RefCell<Option<String>>>,
-    search_active: Rc<RefCell<bool>>,
-    url_to_open: Rc<RefCell<Option<String>>>,
+fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
+    loop {
+        terminal.draw(|f| ui(f, app))?;
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            match &app.mode {
+                Mode::Normal => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                    KeyCode::Char('j') | KeyCode::Down => app.next(),
+                    KeyCode::Char('k') | KeyCode::Up => app.previous(),
+                    KeyCode::Enter => app.open_selected(),
+                    KeyCode::Char('/') => {
+                        app.mode = Mode::Search;
+                        app.search_query.clear();
+                    }
+                    KeyCode::Char('a') => app.start_add(),
+                    KeyCode::Char('e') => app.start_edit(),
+                    KeyCode::Char('d') => {
+                        if app.selected_bookmark().is_some() {
+                            app.mode = Mode::Delete;
+                        }
+                    }
+                    KeyCode::Char('t') => {
+                        let tags = get_all_tags(&app.bookmarks);
+                        if !tags.is_empty() {
+                            app.tag_list_state.select(Some(0));
+                            app.mode = Mode::TagFilter;
+                        }
+                    }
+                    KeyCode::Char('c') => {
+                        app.tag_filter = None;
+                        app.update_filter();
+                    }
+                    _ => {}
+                },
+                Mode::Search => match key.code {
+                    KeyCode::Esc => {
+                        app.mode = Mode::Normal;
+                        app.search_query.clear();
+                        app.update_filter();
+                    }
+                    KeyCode::Enter => {
+                        app.mode = Mode::Normal;
+                    }
+                    KeyCode::Backspace => {
+                        app.search_query.pop();
+                        app.update_filter();
+                    }
+                    KeyCode::Char(c) => {
+                        app.search_query.push(c);
+                        app.update_filter();
+                    }
+                    KeyCode::Down => app.next(),
+                    KeyCode::Up => app.previous(),
+                    _ => {}
+                },
+                Mode::Add(field) | Mode::Edit(field) => {
+                    let is_edit = matches!(app.mode, Mode::Edit(_));
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.clear_form();
+                            app.mode = Mode::Normal;
+                        }
+                        KeyCode::Tab | KeyCode::Enter => {
+                            let next = match field {
+                                AddField::Name => AddField::Url,
+                                AddField::Url => AddField::Desc,
+                                AddField::Desc => AddField::Tags,
+                                AddField::Tags => {
+                                    if !app.form_name.is_empty() && !app.form_url.is_empty() {
+                                        app.save_bookmark();
+                                        continue;
+                                    }
+                                    AddField::Tags
+                                }
+                            };
+                            app.mode = if is_edit {
+                                Mode::Edit(next)
+                            } else {
+                                Mode::Add(next)
+                            };
+                        }
+                        KeyCode::BackTab => {
+                            let prev = match field {
+                                AddField::Name => AddField::Name,
+                                AddField::Url => AddField::Name,
+                                AddField::Desc => AddField::Url,
+                                AddField::Tags => AddField::Desc,
+                            };
+                            app.mode = if is_edit {
+                                Mode::Edit(prev)
+                            } else {
+                                Mode::Add(prev)
+                            };
+                        }
+                        KeyCode::Backspace => {
+                            let field_ref = match field {
+                                AddField::Name => &mut app.form_name,
+                                AddField::Url => &mut app.form_url,
+                                AddField::Desc => &mut app.form_desc,
+                                AddField::Tags => &mut app.form_tags,
+                            };
+                            field_ref.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            let field_ref = match field {
+                                AddField::Name => &mut app.form_name,
+                                AddField::Url => &mut app.form_url,
+                                AddField::Desc => &mut app.form_desc,
+                                AddField::Tags => &mut app.form_tags,
+                            };
+                            field_ref.push(c);
+                        }
+                        _ => {}
+                    }
+                }
+                Mode::Delete => match key.code {
+                    KeyCode::Char('y') | KeyCode::Enter => app.delete_selected(),
+                    KeyCode::Char('n') | KeyCode::Esc => app.mode = Mode::Normal,
+                    _ => {}
+                },
+                Mode::TagFilter => match key.code {
+                    KeyCode::Esc => app.mode = Mode::Normal,
+                    KeyCode::Enter => {
+                        let tags = get_all_tags(&app.bookmarks);
+                        if let Some(i) = app.tag_list_state.selected() {
+                            if i == 0 {
+                                app.tag_filter = None;
+                            } else {
+                                app.tag_filter = tags.get(i - 1).cloned();
+                            }
+                        }
+                        app.update_filter();
+                        app.mode = Mode::Normal;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let tags = get_all_tags(&app.bookmarks);
+                        let len = tags.len() + 1;
+                        let i = app.tag_list_state.selected().unwrap_or(0);
+                        app.tag_list_state.select(Some((i + 1) % len));
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        let tags = get_all_tags(&app.bookmarks);
+                        let len = tags.len() + 1;
+                        let i = app.tag_list_state.selected().unwrap_or(0);
+                        app.tag_list_state
+                            .select(Some(if i == 0 { len - 1 } else { i - 1 }));
+                    }
+                    _ => {}
+                },
+            }
+        }
+
+        if app.should_quit {
+            return Ok(());
+        }
+    }
 }
 
-fn build_main_view_with_url(siv: &mut Cursive) {
-    siv.pop_layer();
+fn ui(f: &mut Frame, app: &App) {
+    let size = f.area();
 
-    let state = siv.user_data::<AppStateWithUrl>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-    let filter = state.filter.borrow().clone();
-    let tag_filter = state.tag_filter.borrow().clone();
-    let search_active = *state.search_active.borrow();
+    // Background
+    f.render_widget(
+        Block::default().style(Style::default().bg(colors::BASE)),
+        size,
+    );
 
-    let mut select = SelectView::<String>::new().on_submit(on_select_bookmark_with_url);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(size);
 
-    let mut items: Vec<(String, String, i64)> = bookmarks
+    // Title with tag filter indicator
+    let title = if let Some(ref tag) = app.tag_filter {
+        format!(" Bookmarks [tag: {}] ", tag)
+    } else {
+        " Bookmarks ".to_string()
+    };
+
+    // Bookmark list
+    let items: Vec<ListItem> = app
+        .filtered_indices
         .iter()
-        .filter_map(|(key, bm)| {
-            let matches_tag = tag_filter
-                .as_ref()
-                .is_none_or(|t| bm.tags.iter().any(|tag| tag.eq_ignore_ascii_case(t)));
-
-            if !matches_tag {
-                return None;
-            }
-
-            let score = if filter.is_empty() {
-                0
-            } else {
-                fuzzy_score(&filter, key, &bm.url, &bm.desc, &bm.tags)
-            };
-
-            if !filter.is_empty() && score < 0 {
-                return None;
-            }
-
-            let tags_str = if bm.tags.is_empty() {
+        .filter_map(|&i| app.bookmarks.get(i))
+        .map(|bm| {
+            let tags = if bm.tags.is_empty() {
                 String::new()
             } else {
                 format!(" [{}]", bm.tags.join(", "))
             };
-            let label = format!(
-                "{:<12} {:<50} {}{}",
-                key,
-                truncate(&bm.url, 50),
-                truncate(&bm.desc, 30),
-                tags_str
-            );
-            Some((label, key.clone(), score))
+
+            let desc = if bm.desc.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", bm.desc)
+            };
+
+            let line = Line::from(vec![
+                Span::styled(&bm.name, Style::default().fg(colors::LAVENDER).bold()),
+                Span::styled(desc, Style::default().fg(colors::SUBTEXT0)),
+                Span::styled(tags, Style::default().fg(colors::MAUVE)),
+            ]);
+
+            let url_line = Line::from(Span::styled(
+                format!("  {}", bm.url),
+                Style::default().fg(colors::SUBTEXT0).dim(),
+            ));
+
+            ListItem::new(vec![line, url_line])
         })
         .collect();
 
-    items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+    let items = if items.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No bookmarks. Press 'a' to add one.",
+            Style::default().fg(colors::SUBTEXT0).italic(),
+        )))]
+    } else {
+        items
+    };
 
-    for (label, key, _) in items {
-        select.add_item(label, key);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(colors::SURFACE1))
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(colors::MAUVE).bold(),
+                ))
+                .style(Style::default().bg(colors::BASE)),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(colors::SURFACE0)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("▶ ");
+
+    f.render_stateful_widget(list, chunks[0], &mut app.list_state.clone());
+
+    // Search bar / status
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(colors::SURFACE1))
+        .style(Style::default().bg(colors::BASE));
+
+    let search_content = match &app.mode {
+        Mode::Search => {
+            let cursor = "█";
+            Paragraph::new(Line::from(vec![
+                Span::styled(" / ", Style::default().fg(colors::MAUVE)),
+                Span::styled(&app.search_query, Style::default().fg(colors::TEXT)),
+                Span::styled(cursor, Style::default().fg(colors::LAVENDER)),
+            ]))
+        }
+        _ if !app.search_query.is_empty() => Paragraph::new(Line::from(vec![
+            Span::styled(" Filter: ", Style::default().fg(colors::SUBTEXT0)),
+            Span::styled(&app.search_query, Style::default().fg(colors::TEXT)),
+        ])),
+        _ => Paragraph::new(Line::from(Span::styled(
+            " Type / to search",
+            Style::default().fg(colors::SUBTEXT0),
+        ))),
+    };
+
+    f.render_widget(search_content.block(search_block), chunks[1]);
+
+    // Help bar
+    let help = match &app.mode {
+        Mode::Normal => {
+            "↑↓/jk: Navigate │ Enter: Open │ /: Search │ a: Add │ e: Edit │ d: Delete │ t: Tags │ c: Clear filter │ q: Quit"
+        }
+        Mode::Search => "Type to filter │ ↑↓: Navigate │ Enter: Confirm │ Esc: Cancel",
+        Mode::Add(_) | Mode::Edit(_) => {
+            "Tab: Next field │ Shift+Tab: Previous │ Enter on Tags: Save │ Esc: Cancel"
+        }
+        Mode::Delete => "y/Enter: Confirm │ n/Esc: Cancel",
+        Mode::TagFilter => "↑↓/jk: Navigate │ Enter: Select │ Esc: Cancel",
+    };
+
+    let help_paragraph = Paragraph::new(Span::styled(help, Style::default().fg(colors::SUBTEXT0)))
+        .style(Style::default().bg(colors::BASE));
+
+    f.render_widget(help_paragraph, chunks[2]);
+
+    // Render modals
+    match &app.mode {
+        Mode::Add(field) => render_form_modal(f, "Add Bookmark", field, app),
+        Mode::Edit(field) => render_form_modal(f, "Edit Bookmark", field, app),
+        Mode::Delete => render_delete_modal(f, app),
+        Mode::TagFilter => render_tag_modal(f, app),
+        _ => {}
     }
+}
 
-    if select.is_empty() {
-        if filter.is_empty() {
-            select.add_item("(no bookmarks - press 'a' to add one)", String::new());
+fn render_form_modal(f: &mut Frame, title: &str, current_field: &AddField, app: &App) {
+    let area = centered_rect(60, 50, f.area());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(" {} ", title),
+            Style::default().fg(colors::MAUVE).bold(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(colors::LAVENDER))
+        .style(Style::default().bg(colors::BASE));
+
+    f.render_widget(block, area);
+
+    let inner = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let fields = [
+        ("Name", &app.form_name, AddField::Name),
+        ("URL", &app.form_url, AddField::Url),
+        ("Description", &app.form_desc, AddField::Desc),
+        ("Tags (comma-separated)", &app.form_tags, AddField::Tags),
+    ];
+
+    for (i, (label, value, field)) in fields.iter().enumerate() {
+        let is_active = current_field == field;
+        let style = if is_active {
+            Style::default().fg(colors::LAVENDER)
         } else {
-            select.add_item("(no matches)", String::new());
-        }
-    }
+            Style::default().fg(colors::SURFACE1)
+        };
 
-    let select = select.with_name(BOOKMARK_LIST_NAME);
+        let cursor = if is_active { "█" } else { "" };
+        let content = format!("{}{}", value, cursor);
 
-    let tag_display = if let Some(t) = tag_filter.as_ref() {
-        format!(" [tag: {}]", t)
-    } else {
-        String::new()
-    };
+        let input = Paragraph::new(content)
+            .style(Style::default().fg(colors::TEXT))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(style)
+                    .title(Span::styled(
+                        format!(" {} ", label),
+                        if is_active {
+                            Style::default().fg(colors::LAVENDER)
+                        } else {
+                            Style::default().fg(colors::SUBTEXT0)
+                        },
+                    ))
+                    .style(Style::default().bg(colors::BASE)),
+            );
 
-    let title = format!("Bookmarks{}", tag_display);
-
-    drop(bookmarks);
-
-    let select = OnEventView::new(select)
-        .on_event('a', |s| {
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            if !*state.search_active.borrow() {
-                show_add_dialog_with_url(s);
-            }
-        })
-        .on_event('e', |s| {
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            if !*state.search_active.borrow() {
-                show_edit_dialog_with_url(s);
-            }
-        })
-        .on_event('d', |s| {
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            if !*state.search_active.borrow() {
-                show_delete_dialog_with_url(s);
-            }
-        })
-        .on_event('/', |s| {
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            if !*state.search_active.borrow() {
-                *state.search_active.borrow_mut() = true;
-                build_main_view_with_url(s);
-                s.focus_name(SEARCH_INPUT_NAME).ok();
-            }
-        })
-        .on_event('t', |s| {
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            if !*state.search_active.borrow() {
-                show_tag_filter_dialog_with_url(s);
-            }
-        });
-
-    let help_text = if search_active {
-        "Type to filter | Enter: Select | Esc: Cancel search"
-    } else {
-        "Enter: Open | a: Add | e: Edit | d: Delete | /: Search | t: Tags | q: Quit"
-    };
-
-    let mut layout =
-        LinearLayout::vertical().child(Panel::new(select.scrollable().full_screen()).title(title));
-
-    if search_active {
-        let search_input = EditView::new()
-            .content(&filter)
-            .on_edit(|s, text, _| {
-                let state = s.user_data::<AppStateWithUrl>().unwrap();
-                *state.filter.borrow_mut() = text.to_string();
-                update_bookmark_list_with_url(s);
-            })
-            .on_submit(|s, _| {
-                if let Some(key) = get_selected_key(s)
-                    && !key.is_empty()
-                {
-                    on_select_bookmark_with_url(s, &key);
-                }
-            })
-            .with_name(SEARCH_INPUT_NAME)
-            .full_width();
-
-        layout.add_child(
-            LinearLayout::horizontal()
-                .child(TextView::new("> "))
-                .child(search_input),
-        );
-    }
-
-    layout.add_child(TextView::new(help_text));
-
-    siv.add_fullscreen_layer(layout);
-
-    if search_active {
-        siv.focus_name(SEARCH_INPUT_NAME).ok();
+        f.render_widget(input, inner[i]);
     }
 }
 
-fn update_bookmark_list_with_url(siv: &mut Cursive) {
-    let (items, filter_empty) = {
-        let state = siv.user_data::<AppStateWithUrl>().unwrap();
-        let bookmarks = state.bookmarks.borrow();
-        let filter = state.filter.borrow().clone();
-        let tag_filter = state.tag_filter.borrow().clone();
+fn render_delete_modal(f: &mut Frame, app: &App) {
+    let area = centered_rect(50, 20, f.area());
+    f.render_widget(Clear, area);
 
-        let mut items: Vec<(String, String, i64)> = bookmarks
-            .iter()
-            .filter_map(|(key, bm)| {
-                let matches_tag = tag_filter
-                    .as_ref()
-                    .is_none_or(|t| bm.tags.iter().any(|tag| tag.eq_ignore_ascii_case(t)));
+    let name = app
+        .selected_bookmark()
+        .map(|b| b.name.as_str())
+        .unwrap_or("this bookmark");
 
-                if !matches_tag {
-                    return None;
-                }
+    let block = Block::default()
+        .title(Span::styled(
+            " Delete ",
+            Style::default().fg(colors::RED).bold(),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(colors::RED))
+        .style(Style::default().bg(colors::BASE));
 
-                let score = if filter.is_empty() {
-                    0
-                } else {
-                    fuzzy_score(&filter, key, &bm.url, &bm.desc, &bm.tags)
-                };
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Delete '{}'?", name),
+            Style::default().fg(colors::TEXT),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("y", Style::default().fg(colors::GREEN).bold()),
+            Span::styled(": Yes  ", Style::default().fg(colors::SUBTEXT0)),
+            Span::styled("n", Style::default().fg(colors::RED).bold()),
+            Span::styled(": No", Style::default().fg(colors::SUBTEXT0)),
+        ]),
+    ])
+    .block(block)
+    .alignment(ratatui::layout::Alignment::Center);
 
-                if !filter.is_empty() && score < 0 {
-                    return None;
-                }
-
-                let tags_str = if bm.tags.is_empty() {
-                    String::new()
-                } else {
-                    format!(" [{}]", bm.tags.join(", "))
-                };
-                let label = format!(
-                    "{:<12} {:<50} {}{}",
-                    key,
-                    truncate(&bm.url, 50),
-                    truncate(&bm.desc, 30),
-                    tags_str
-                );
-                Some((label, key.clone(), score))
-            })
-            .collect();
-
-        items.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
-
-        (items, filter.is_empty())
-    };
-
-    siv.call_on_name(BOOKMARK_LIST_NAME, |view: &mut SelectView<String>| {
-        view.clear();
-
-        for (label, key, _) in items {
-            view.add_item(label, key);
-        }
-
-        if view.is_empty() {
-            if filter_empty {
-                view.add_item("(no bookmarks - press 'a' to add one)", String::new());
-            } else {
-                view.add_item("(no matches)", String::new());
-            }
-        }
-    });
+    f.render_widget(text, area);
 }
 
-fn on_select_bookmark_with_url(siv: &mut Cursive, key: &String) {
-    if key.is_empty() {
-        return;
-    }
+fn render_tag_modal(f: &mut Frame, app: &App) {
+    let area = centered_rect(40, 50, f.area());
+    f.render_widget(Clear, area);
 
-    let state = siv.user_data::<AppStateWithUrl>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
+    let tags = get_all_tags(&app.bookmarks);
+    let mut items: Vec<ListItem> = vec![ListItem::new(Span::styled(
+        "(All bookmarks)",
+        Style::default().fg(colors::SUBTEXT0),
+    ))];
 
-    if let Some(bm) = bookmarks.get(key) {
-        let url = bm.url.clone();
-        *state.url_to_open.borrow_mut() = Some(url);
-        drop(bookmarks);
-        siv.quit();
-    }
-}
+    items.extend(
+        tags.iter()
+            .map(|t| ListItem::new(Span::styled(t, Style::default().fg(colors::TEXT)))),
+    );
 
-fn show_add_dialog(siv: &mut Cursive) {
-    let dialog = Dialog::new()
-        .title("Add Bookmark")
-        .content(
-            LinearLayout::vertical()
-                .child(TextView::new("Key:"))
-                .child(EditView::new().with_name("key").fixed_width(40))
-                .child(TextView::new("URL:"))
-                .child(EditView::new().with_name("url").fixed_width(40))
-                .child(TextView::new("Description:"))
-                .child(EditView::new().with_name("desc").fixed_width(40))
-                .child(TextView::new("Tags (comma-separated):"))
-                .child(EditView::new().with_name("tags").fixed_width(40)),
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .title(Span::styled(
+                    " Filter by Tag ",
+                    Style::default().fg(colors::MAUVE).bold(),
+                ))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(colors::LAVENDER))
+                .style(Style::default().bg(colors::BASE)),
         )
-        .button("Add", |s| {
-            let key = s
-                .call_on_name("key", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let url = s
-                .call_on_name("url", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let desc = s
-                .call_on_name("desc", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let tags_str = s
-                .call_on_name("tags", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-
-            if key.is_empty() || url.is_empty() {
-                s.add_layer(Dialog::info("Key and URL are required"));
-                return;
-            }
-
-            let tags: Vec<String> = tags_str
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-
-            let state = s.user_data::<AppState>().unwrap();
-            let mut bookmarks = state.bookmarks.borrow_mut();
-
-            match add_bookmark(&mut bookmarks, key, url, desc, tags) {
-                Ok(()) => {
-                    if let Err(e) = save_bookmarks(&bookmarks) {
-                        drop(bookmarks);
-                        s.add_layer(Dialog::info(format!("Failed to save: {}", e)));
-                        return;
-                    }
-                    drop(bookmarks);
-                    s.pop_layer();
-                    build_main_view(s);
-                }
-                Err(e) => {
-                    drop(bookmarks);
-                    s.add_layer(Dialog::info(format!("Error: {}", e)));
-                }
-            }
-        })
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn show_add_dialog_with_url(siv: &mut Cursive) {
-    let dialog = Dialog::new()
-        .title("Add Bookmark")
-        .content(
-            LinearLayout::vertical()
-                .child(TextView::new("Key:"))
-                .child(EditView::new().with_name("key").fixed_width(40))
-                .child(TextView::new("URL:"))
-                .child(EditView::new().with_name("url").fixed_width(40))
-                .child(TextView::new("Description:"))
-                .child(EditView::new().with_name("desc").fixed_width(40))
-                .child(TextView::new("Tags (comma-separated):"))
-                .child(EditView::new().with_name("tags").fixed_width(40)),
+        .highlight_style(
+            Style::default()
+                .bg(colors::SURFACE0)
+                .add_modifier(Modifier::BOLD),
         )
-        .button("Add", |s| {
-            let key = s
-                .call_on_name("key", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let url = s
-                .call_on_name("url", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let desc = s
-                .call_on_name("desc", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let tags_str = s
-                .call_on_name("tags", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
+        .highlight_symbol("▶ ");
 
-            if key.is_empty() || url.is_empty() {
-                s.add_layer(Dialog::info("Key and URL are required"));
-                return;
-            }
-
-            let tags: Vec<String> = tags_str
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            let mut bookmarks = state.bookmarks.borrow_mut();
-
-            match add_bookmark(&mut bookmarks, key, url, desc, tags) {
-                Ok(()) => {
-                    if let Err(e) = save_bookmarks(&bookmarks) {
-                        drop(bookmarks);
-                        s.add_layer(Dialog::info(format!("Failed to save: {}", e)));
-                        return;
-                    }
-                    drop(bookmarks);
-                    s.pop_layer();
-                    build_main_view_with_url(s);
-                }
-                Err(e) => {
-                    drop(bookmarks);
-                    s.add_layer(Dialog::info(format!("Error: {}", e)));
-                }
-            }
-        })
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
+    f.render_stateful_widget(list, area, &mut app.tag_list_state.clone());
 }
 
-fn show_edit_dialog(siv: &mut Cursive) {
-    let selected_key = get_selected_key(siv);
-    let selected_key = match selected_key {
-        Some(k) if !k.is_empty() => k,
-        _ => return,
-    };
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
 
-    let state = siv.user_data::<AppState>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-
-    let bm = match bookmarks.get(&selected_key) {
-        Some(b) => b.clone(),
-        None => return,
-    };
-
-    drop(bookmarks);
-
-    let key_for_closure = selected_key.clone();
-
-    let dialog = Dialog::new()
-        .title(format!("Edit: {}", selected_key))
-        .content(
-            LinearLayout::vertical()
-                .child(TextView::new("URL:"))
-                .child(
-                    EditView::new()
-                        .content(&bm.url)
-                        .with_name("url")
-                        .fixed_width(40),
-                )
-                .child(TextView::new("Description:"))
-                .child(
-                    EditView::new()
-                        .content(&bm.desc)
-                        .with_name("desc")
-                        .fixed_width(40),
-                )
-                .child(TextView::new("Tags (comma-separated):"))
-                .child(
-                    EditView::new()
-                        .content(bm.tags.join(", "))
-                        .with_name("tags")
-                        .fixed_width(40),
-                ),
-        )
-        .button("Save", move |s| {
-            let url = s
-                .call_on_name("url", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let desc = s
-                .call_on_name("desc", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let tags_str = s
-                .call_on_name("tags", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-
-            if url.is_empty() {
-                s.add_layer(Dialog::info("URL is required"));
-                return;
-            }
-
-            let tags: Vec<String> = tags_str
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-
-            let state = s.user_data::<AppState>().unwrap();
-            let mut bookmarks = state.bookmarks.borrow_mut();
-
-            if let Err(e) = update_bookmark(&mut bookmarks, &key_for_closure, url, desc, tags) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Error: {}", e)));
-                return;
-            }
-
-            if let Err(e) = save_bookmarks(&bookmarks) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Failed to save: {}", e)));
-                return;
-            }
-
-            drop(bookmarks);
-            s.pop_layer();
-            build_main_view(s);
-        })
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn show_edit_dialog_with_url(siv: &mut Cursive) {
-    let selected_key = get_selected_key(siv);
-    let selected_key = match selected_key {
-        Some(k) if !k.is_empty() => k,
-        _ => return,
-    };
-
-    let state = siv.user_data::<AppStateWithUrl>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-
-    let bm = match bookmarks.get(&selected_key) {
-        Some(b) => b.clone(),
-        None => return,
-    };
-
-    drop(bookmarks);
-
-    let key_for_closure = selected_key.clone();
-
-    let dialog = Dialog::new()
-        .title(format!("Edit: {}", selected_key))
-        .content(
-            LinearLayout::vertical()
-                .child(TextView::new("URL:"))
-                .child(
-                    EditView::new()
-                        .content(&bm.url)
-                        .with_name("url")
-                        .fixed_width(40),
-                )
-                .child(TextView::new("Description:"))
-                .child(
-                    EditView::new()
-                        .content(&bm.desc)
-                        .with_name("desc")
-                        .fixed_width(40),
-                )
-                .child(TextView::new("Tags (comma-separated):"))
-                .child(
-                    EditView::new()
-                        .content(bm.tags.join(", "))
-                        .with_name("tags")
-                        .fixed_width(40),
-                ),
-        )
-        .button("Save", move |s| {
-            let url = s
-                .call_on_name("url", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let desc = s
-                .call_on_name("desc", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-            let tags_str = s
-                .call_on_name("tags", |v: &mut EditView| v.get_content())
-                .unwrap()
-                .to_string();
-
-            if url.is_empty() {
-                s.add_layer(Dialog::info("URL is required"));
-                return;
-            }
-
-            let tags: Vec<String> = tags_str
-                .split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect();
-
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            let mut bookmarks = state.bookmarks.borrow_mut();
-
-            if let Err(e) = update_bookmark(&mut bookmarks, &key_for_closure, url, desc, tags) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Error: {}", e)));
-                return;
-            }
-
-            if let Err(e) = save_bookmarks(&bookmarks) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Failed to save: {}", e)));
-                return;
-            }
-
-            drop(bookmarks);
-            s.pop_layer();
-            build_main_view_with_url(s);
-        })
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn show_delete_dialog(siv: &mut Cursive) {
-    let selected_key = get_selected_key(siv);
-    let selected_key = match selected_key {
-        Some(k) if !k.is_empty() => k,
-        _ => return,
-    };
-
-    let key_for_closure = selected_key.clone();
-
-    let dialog = Dialog::new()
-        .title("Delete Bookmark")
-        .content(TextView::new(format!(
-            "Delete bookmark '{}'?",
-            selected_key
-        )))
-        .button("Delete", move |s| {
-            let state = s.user_data::<AppState>().unwrap();
-            let mut bookmarks = state.bookmarks.borrow_mut();
-
-            if let Err(e) = delete_bookmark(&mut bookmarks, &key_for_closure) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Error: {}", e)));
-                return;
-            }
-
-            if let Err(e) = save_bookmarks(&bookmarks) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Failed to save: {}", e)));
-                return;
-            }
-
-            drop(bookmarks);
-            s.pop_layer();
-            build_main_view(s);
-        })
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn show_delete_dialog_with_url(siv: &mut Cursive) {
-    let selected_key = get_selected_key(siv);
-    let selected_key = match selected_key {
-        Some(k) if !k.is_empty() => k,
-        _ => return,
-    };
-
-    let key_for_closure = selected_key.clone();
-
-    let dialog = Dialog::new()
-        .title("Delete Bookmark")
-        .content(TextView::new(format!(
-            "Delete bookmark '{}'?",
-            selected_key
-        )))
-        .button("Delete", move |s| {
-            let state = s.user_data::<AppStateWithUrl>().unwrap();
-            let mut bookmarks = state.bookmarks.borrow_mut();
-
-            if let Err(e) = delete_bookmark(&mut bookmarks, &key_for_closure) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Error: {}", e)));
-                return;
-            }
-
-            if let Err(e) = save_bookmarks(&bookmarks) {
-                drop(bookmarks);
-                s.add_layer(Dialog::info(format!("Failed to save: {}", e)));
-                return;
-            }
-
-            drop(bookmarks);
-            s.pop_layer();
-            build_main_view_with_url(s);
-        })
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn show_tag_filter_dialog(siv: &mut Cursive) {
-    let state = siv.user_data::<AppState>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-    let tags = get_all_tags(&bookmarks);
-    drop(bookmarks);
-
-    if tags.is_empty() {
-        siv.add_layer(Dialog::info("No tags found"));
-        return;
-    }
-
-    let mut select = SelectView::<Option<String>>::new().on_submit(|s, tag: &Option<String>| {
-        let state = s.user_data::<AppState>().unwrap();
-        *state.tag_filter.borrow_mut() = tag.clone();
-        s.pop_layer();
-        build_main_view(s);
-    });
-
-    select.add_item("(All bookmarks)", None);
-    for tag in tags {
-        select.add_item(tag.clone(), Some(tag));
-    }
-
-    let dialog = Dialog::new()
-        .title("Filter by Tag")
-        .content(select.scrollable().max_height(10))
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn show_tag_filter_dialog_with_url(siv: &mut Cursive) {
-    let state = siv.user_data::<AppStateWithUrl>().unwrap();
-    let bookmarks = state.bookmarks.borrow();
-    let tags = get_all_tags(&bookmarks);
-    drop(bookmarks);
-
-    if tags.is_empty() {
-        siv.add_layer(Dialog::info("No tags found"));
-        return;
-    }
-
-    let mut select = SelectView::<Option<String>>::new().on_submit(|s, tag: &Option<String>| {
-        let state = s.user_data::<AppStateWithUrl>().unwrap();
-        *state.tag_filter.borrow_mut() = tag.clone();
-        s.pop_layer();
-        build_main_view_with_url(s);
-    });
-
-    select.add_item("(All bookmarks)", None);
-    for tag in tags {
-        select.add_item(tag.clone(), Some(tag));
-    }
-
-    let dialog = Dialog::new()
-        .title("Filter by Tag")
-        .content(select.scrollable().max_height(10))
-        .button("Cancel", |s| {
-            s.pop_layer();
-        });
-
-    siv.add_layer(dialog);
-}
-
-fn get_selected_key(siv: &mut Cursive) -> Option<String> {
-    siv.call_on_name(BOOKMARK_LIST_NAME, |view: &mut SelectView<String>| {
-        view.selected_id()
-            .and_then(|id| view.get_item(id).map(|(_, key)| key.clone()))
-    })
-    .flatten()
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }

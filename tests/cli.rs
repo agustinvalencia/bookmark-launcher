@@ -1,137 +1,106 @@
-use bookmarker::bookmarks::{
+use bmk::bookmarks::{
     Bookmark, Bookmarks, add_bookmark, delete_bookmark, get_all_tags, update_bookmark,
 };
-use std::collections::HashMap;
 
 #[test]
 fn test_add_bookmark() {
-    let mut bookmarks: Bookmarks = HashMap::new();
+    let mut bookmarks: Bookmarks = Vec::new();
 
-    add_bookmark(
-        &mut bookmarks,
-        "gh".to_string(),
-        "https://github.com".to_string(),
-        "Code hosting".to_string(),
-        vec!["dev".to_string()],
-    )
-    .unwrap();
+    let bookmark = Bookmark {
+        name: "GitHub".to_string(),
+        url: "https://github.com".to_string(),
+        desc: "Code hosting".to_string(),
+        tags: vec!["dev".to_string()],
+    };
 
-    assert!(bookmarks.contains_key("gh"));
-    assert_eq!(bookmarks["gh"].url, "https://github.com");
-    assert_eq!(bookmarks["gh"].desc, "Code hosting");
-    assert_eq!(bookmarks["gh"].tags, vec!["dev"]);
-}
+    add_bookmark(&mut bookmarks, bookmark);
 
-#[test]
-fn test_add_duplicate_bookmark_fails() {
-    let mut bookmarks: Bookmarks = HashMap::new();
-
-    add_bookmark(
-        &mut bookmarks,
-        "gh".to_string(),
-        "https://github.com".to_string(),
-        "Code hosting".to_string(),
-        vec![],
-    )
-    .unwrap();
-
-    let result = add_bookmark(
-        &mut bookmarks,
-        "gh".to_string(),
-        "https://different.com".to_string(),
-        "Different".to_string(),
-        vec![],
-    );
-
-    assert!(result.is_err());
+    assert_eq!(bookmarks.len(), 1);
+    assert_eq!(bookmarks[0].name, "GitHub");
+    assert_eq!(bookmarks[0].url, "https://github.com");
+    assert_eq!(bookmarks[0].desc, "Code hosting");
+    assert_eq!(bookmarks[0].tags, vec!["dev"]);
 }
 
 #[test]
 fn test_update_bookmark() {
-    let mut bookmarks: Bookmarks = HashMap::new();
-    bookmarks.insert(
-        "gh".to_string(),
-        Bookmark {
-            url: "https://github.com".to_string(),
-            desc: "Old desc".to_string(),
-            tags: vec![],
-        },
-    );
+    let mut bookmarks: Bookmarks = vec![Bookmark {
+        name: "GitHub".to_string(),
+        url: "https://github.com".to_string(),
+        desc: "Old desc".to_string(),
+        tags: vec![],
+    }];
 
-    update_bookmark(
-        &mut bookmarks,
-        "gh",
-        "https://github.com/new".to_string(),
-        "New desc".to_string(),
-        vec!["updated".to_string()],
-    )
-    .unwrap();
+    let updated = Bookmark {
+        name: "GitHub Updated".to_string(),
+        url: "https://github.com/new".to_string(),
+        desc: "New desc".to_string(),
+        tags: vec!["updated".to_string()],
+    };
 
-    assert_eq!(bookmarks["gh"].url, "https://github.com/new");
-    assert_eq!(bookmarks["gh"].desc, "New desc");
-    assert_eq!(bookmarks["gh"].tags, vec!["updated"]);
+    update_bookmark(&mut bookmarks, 0, updated);
+
+    assert_eq!(bookmarks[0].name, "GitHub Updated");
+    assert_eq!(bookmarks[0].url, "https://github.com/new");
+    assert_eq!(bookmarks[0].desc, "New desc");
+    assert_eq!(bookmarks[0].tags, vec!["updated"]);
 }
 
 #[test]
-fn test_update_nonexistent_bookmark_fails() {
-    let mut bookmarks: Bookmarks = HashMap::new();
+fn test_update_bookmark_out_of_bounds() {
+    let mut bookmarks: Bookmarks = Vec::new();
 
-    let result = update_bookmark(
-        &mut bookmarks,
-        "nonexistent",
-        "https://example.com".to_string(),
-        "Desc".to_string(),
-        vec![],
-    );
+    let bookmark = Bookmark {
+        name: "Test".to_string(),
+        url: "https://test.com".to_string(),
+        desc: String::new(),
+        tags: vec![],
+    };
 
-    assert!(result.is_err());
+    // Should not panic, just do nothing
+    update_bookmark(&mut bookmarks, 10, bookmark);
+    assert!(bookmarks.is_empty());
 }
 
 #[test]
 fn test_delete_bookmark() {
-    let mut bookmarks: Bookmarks = HashMap::new();
-    bookmarks.insert(
-        "gh".to_string(),
-        Bookmark {
-            url: "https://github.com".to_string(),
-            desc: "Code hosting".to_string(),
-            tags: vec![],
-        },
-    );
+    let mut bookmarks: Bookmarks = vec![Bookmark {
+        name: "GitHub".to_string(),
+        url: "https://github.com".to_string(),
+        desc: "Code hosting".to_string(),
+        tags: vec![],
+    }];
 
-    delete_bookmark(&mut bookmarks, "gh").unwrap();
+    delete_bookmark(&mut bookmarks, 0);
 
-    assert!(!bookmarks.contains_key("gh"));
+    assert!(bookmarks.is_empty());
 }
 
 #[test]
-fn test_delete_nonexistent_bookmark_fails() {
-    let mut bookmarks: Bookmarks = HashMap::new();
+fn test_delete_bookmark_out_of_bounds() {
+    let mut bookmarks: Bookmarks = Vec::new();
 
-    let result = delete_bookmark(&mut bookmarks, "nonexistent");
-
-    assert!(result.is_err());
+    // Should not panic, just do nothing
+    delete_bookmark(&mut bookmarks, 10);
+    assert!(bookmarks.is_empty());
 }
 
 #[test]
 fn test_get_all_tags() {
-    let mut bookmarks: Bookmarks = HashMap::new();
-    bookmarks.insert(
-        "gh".to_string(),
+    let bookmarks: Bookmarks = vec![
         Bookmark {
+            name: "GitHub".to_string(),
             url: "https://github.com".to_string(),
             desc: "Code".to_string(),
             tags: vec!["dev".to_string(), "code".to_string()],
         },
-    );
-    bookmarks.insert(
-        "docs".to_string(),
         Bookmark {
+            name: "Docs".to_string(),
             url: "https://docs.rs".to_string(),
             desc: "Docs".to_string(),
             tags: vec!["dev".to_string(), "rust".to_string()],
         },
-    );
+    ];
 
     let tags = get_all_tags(&bookmarks);
 
@@ -140,9 +109,23 @@ fn test_get_all_tags() {
 
 #[test]
 fn test_get_all_tags_empty() {
-    let bookmarks: Bookmarks = HashMap::new();
+    let bookmarks: Bookmarks = Vec::new();
 
     let tags = get_all_tags(&bookmarks);
 
     assert!(tags.is_empty());
+}
+
+#[test]
+fn test_bookmark_without_optional_fields() {
+    let bookmark = Bookmark {
+        name: "Test".to_string(),
+        url: "https://test.com".to_string(),
+        desc: String::new(),
+        tags: vec![],
+    };
+
+    assert_eq!(bookmark.name, "Test");
+    assert!(bookmark.desc.is_empty());
+    assert!(bookmark.tags.is_empty());
 }
