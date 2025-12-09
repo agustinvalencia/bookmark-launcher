@@ -106,9 +106,10 @@ impl App {
             .filter_map(|(i, bm)| {
                 // Tag filter
                 if let Some(ref tag) = self.tag_filter
-                    && !bm.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
-                        return None;
-                    }
+                    && !bm.tags.iter().any(|t| t.eq_ignore_ascii_case(tag))
+                {
+                    return None;
+                }
 
                 // Fuzzy search
                 if query.is_empty() {
