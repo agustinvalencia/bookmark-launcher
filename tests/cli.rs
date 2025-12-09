@@ -1,65 +1,148 @@
-use assert_cmd::prelude::*;
-use predicates::prelude::*;
-use std::process::Command;
-// Use assert_fs to create a temporary home directory for our tests
-use assert_fs::TempDir;
-use assert_fs::prelude::*;
+use bookmarker::bookmarks::{
+    Bookmark, Bookmarks, add_bookmark, delete_bookmark, get_all_tags, update_bookmark,
+};
+use std::collections::HashMap;
 
 #[test]
-fn test_add_and_list_bookmark() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Create a temporary directory to act as our "home"
-    let temp = TempDir::new()?;
-    let bookmark_file = temp.child(".config/bookmarker/bookmarks.yaml");
+fn test_add_bookmark() {
+    let mut bookmarks: Bookmarks = HashMap::new();
 
-    // 2. Run the add command, pointing HOME to our temp dir
-    let mut cmd = Command::cargo_bin("bookmarker")?;
-    cmd.env("HOME", temp.path()); // Critically, override the home directory
-    cmd.arg("add")
-        .arg("gh")
-        .arg("https://github.com")
-        .arg("--desc")
-        .arg("The place for code");
-    cmd.assert().success();
+    add_bookmark(
+        &mut bookmarks,
+        "gh".to_string(),
+        "https://github.com".to_string(),
+        "Code hosting".to_string(),
+        vec!["dev".to_string()],
+    )
+    .unwrap();
 
-    // 3. Assert that the bookmarks file was created correctly
-    bookmark_file.assert(predicate::str::contains("url: https://github.com"));
-
-    // 4. Run the list command and check the output
-    let mut cmd2 = Command::cargo_bin("bookmarker")?;
-    cmd2.env("HOME", temp.path());
-    cmd2.arg("list");
-    cmd2.assert()
-        .success()
-        .stdout(predicate::str::contains("gh"));
-
-    Ok(())
+    assert!(bookmarks.contains_key("gh"));
+    assert_eq!(bookmarks["gh"].url, "https://github.com");
+    assert_eq!(bookmarks["gh"].desc, "Code hosting");
+    assert_eq!(bookmarks["gh"].tags, vec!["dev"]);
 }
 
-// You can similarly update the test_delete_bookmark function
 #[test]
-fn test_delete_bookmark() -> Result<(), Box<dyn std::error::Error>> {
-    let temp = TempDir::new()?;
-    let bookmark_file = temp.child(".config/bookmarker/bookmarks.yaml");
+fn test_add_duplicate_bookmark_fails() {
+    let mut bookmarks: Bookmarks = HashMap::new();
 
-    // 1. Add a bookmark first
-    let mut cmd_add = Command::cargo_bin("bookmarker")?;
-    cmd_add
-        .env("HOME", temp.path())
-        .arg("add")
-        .arg("tmp")
-        .arg("https://tmp.com")
-        .arg("-d")
-        .arg("temp");
-    cmd_add.assert().success();
-    bookmark_file.assert(predicate::str::contains("tmp")); // Check it was added
+    add_bookmark(
+        &mut bookmarks,
+        "gh".to_string(),
+        "https://github.com".to_string(),
+        "Code hosting".to_string(),
+        vec![],
+    )
+    .unwrap();
 
-    // 2. Delete the bookmark
-    let mut cmd_delete = Command::cargo_bin("bookmarker")?;
-    cmd_delete.env("HOME", temp.path()).arg("delete").arg("tmp");
-    cmd_delete.assert().success();
+    let result = add_bookmark(
+        &mut bookmarks,
+        "gh".to_string(),
+        "https://different.com".to_string(),
+        "Different".to_string(),
+        vec![],
+    );
 
-    // 3. The file should no longer contain the entry (it might be empty or just not have 'tmp')
-    bookmark_file.assert(predicate::str::contains("tmp").not());
+    assert!(result.is_err());
+}
 
-    Ok(())
+#[test]
+fn test_update_bookmark() {
+    let mut bookmarks: Bookmarks = HashMap::new();
+    bookmarks.insert(
+        "gh".to_string(),
+        Bookmark {
+            url: "https://github.com".to_string(),
+            desc: "Old desc".to_string(),
+            tags: vec![],
+        },
+    );
+
+    update_bookmark(
+        &mut bookmarks,
+        "gh",
+        "https://github.com/new".to_string(),
+        "New desc".to_string(),
+        vec!["updated".to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(bookmarks["gh"].url, "https://github.com/new");
+    assert_eq!(bookmarks["gh"].desc, "New desc");
+    assert_eq!(bookmarks["gh"].tags, vec!["updated"]);
+}
+
+#[test]
+fn test_update_nonexistent_bookmark_fails() {
+    let mut bookmarks: Bookmarks = HashMap::new();
+
+    let result = update_bookmark(
+        &mut bookmarks,
+        "nonexistent",
+        "https://example.com".to_string(),
+        "Desc".to_string(),
+        vec![],
+    );
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_delete_bookmark() {
+    let mut bookmarks: Bookmarks = HashMap::new();
+    bookmarks.insert(
+        "gh".to_string(),
+        Bookmark {
+            url: "https://github.com".to_string(),
+            desc: "Code hosting".to_string(),
+            tags: vec![],
+        },
+    );
+
+    delete_bookmark(&mut bookmarks, "gh").unwrap();
+
+    assert!(!bookmarks.contains_key("gh"));
+}
+
+#[test]
+fn test_delete_nonexistent_bookmark_fails() {
+    let mut bookmarks: Bookmarks = HashMap::new();
+
+    let result = delete_bookmark(&mut bookmarks, "nonexistent");
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_get_all_tags() {
+    let mut bookmarks: Bookmarks = HashMap::new();
+    bookmarks.insert(
+        "gh".to_string(),
+        Bookmark {
+            url: "https://github.com".to_string(),
+            desc: "Code".to_string(),
+            tags: vec!["dev".to_string(), "code".to_string()],
+        },
+    );
+    bookmarks.insert(
+        "docs".to_string(),
+        Bookmark {
+            url: "https://docs.rs".to_string(),
+            desc: "Docs".to_string(),
+            tags: vec!["dev".to_string(), "rust".to_string()],
+        },
+    );
+
+    let tags = get_all_tags(&bookmarks);
+
+    assert_eq!(tags, vec!["code", "dev", "rust"]);
+}
+
+#[test]
+fn test_get_all_tags_empty() {
+    let bookmarks: Bookmarks = HashMap::new();
+
+    let tags = get_all_tags(&bookmarks);
+
+    assert!(tags.is_empty());
 }
