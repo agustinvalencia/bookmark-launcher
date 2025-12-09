@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::path::PathBuf;
-use webbrowser;
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Bookmark {
@@ -39,7 +38,6 @@ pub fn load_bookmarks() -> Result<Bookmarks> {
 
 pub fn save_bookmarks(bookmarks: &Bookmarks) -> Result<()> {
     let path = get_bookmarks_path()?;
-    // Create the parent directory if it is not there
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -51,88 +49,61 @@ pub fn save_bookmarks(bookmarks: &Bookmarks) -> Result<()> {
 
     let yaml_string = serde_yaml::to_string(bookmarks)?;
 
-    // All good to go
     fs::write(&path, yaml_string)
         .with_context(|| format!("Failed to write bookmarks to '{}'", path.display()))?;
     Ok(())
 }
 
-pub fn handle_list_command(tag: Option<String>) -> Result<()> {
-    let bookmarks = load_bookmarks()?;
-
-    println!(
-        "{:<10} | {:<40} | {:<40} | Tags",
-        "Key", "URL", "Description",
-    );
-    println!("{}", "-".repeat(110));
-
-    for (key, bookmark) in &bookmarks {
-        if let Some(filter_tag) = &tag {
-            if !bookmark
-                .tags
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(filter_tag))
-            {
-                continue;
-            }
-        }
-        println!(
-            "{:<10} | {:<40} | {:<40} | {}",
-            key,
-            bookmark.url,
-            bookmark.desc,
-            bookmark.tags.join(", ")
-        );
-    }
-    Ok(())
-}
-
-pub fn handle_add_command(
+pub fn add_bookmark(
+    bookmarks: &mut Bookmarks,
     key: String,
     url: String,
     desc: String,
-    tags: Option<Vec<String>>,
+    tags: Vec<String>,
 ) -> Result<()> {
-    let mut bookmarks = load_bookmarks()?;
-
     if bookmarks.contains_key(&key) {
         anyhow::bail!("Bookmark with key '{}' already exists.", key);
     }
 
-    let new_bookmark = Bookmark {
-        url,
-        desc,
-        tags: tags.unwrap_or_default(),
-    };
-    bookmarks.insert(key.clone(), new_bookmark);
-    save_bookmarks(&bookmarks)?;
-
-    println!(" > Bookmark '{key}' added.");
+    let new_bookmark = Bookmark { url, desc, tags };
+    bookmarks.insert(key, new_bookmark);
     Ok(())
 }
 
-pub fn handle_open_command(key: &str) -> Result<()> {
-    let bookmarks = load_bookmarks()?;
+pub fn update_bookmark(
+    bookmarks: &mut Bookmarks,
+    key: &str,
+    url: String,
+    desc: String,
+    tags: Vec<String>,
+) -> Result<()> {
+    if !bookmarks.contains_key(key) {
+        anyhow::bail!("Bookmark with key '{}' not found.", key);
+    }
 
-    if let Some(bookmark) = bookmarks.get(key) {
-        println!("Opening '{}'  ({})", key, bookmark.url);
-        webbrowser::open(&bookmark.url)
-            .with_context(|| format!("Failed to open URL for key '{key}'"))?;
-    } else {
+    let bookmark = Bookmark { url, desc, tags };
+    bookmarks.insert(key.to_string(), bookmark);
+    Ok(())
+}
+
+pub fn delete_bookmark(bookmarks: &mut Bookmarks, key: &str) -> Result<()> {
+    if bookmarks.remove(key).is_none() {
         anyhow::bail!("Bookmark with key '{}' not found.", key);
     }
     Ok(())
 }
 
-pub fn handle_delete_command(key: &str) -> Result<()> {
-    let mut bookmarks = load_bookmarks()?;
-
-    if bookmarks.contains_key(key) {
-        bookmarks.remove(key);
-        save_bookmarks(&bookmarks)?;
-        println!("Bookmark '{key}' deleted");
-    } else {
-        anyhow::bail!("Bookmark with key '{}' not found.", key);
-    }
+pub fn open_bookmark(url: &str) -> Result<()> {
+    webbrowser::open(url).with_context(|| format!("Failed to open URL: {}", url))?;
     Ok(())
+}
+
+pub fn get_all_tags(bookmarks: &Bookmarks) -> Vec<String> {
+    let mut tags: Vec<String> = bookmarks
+        .values()
+        .flat_map(|b| b.tags.iter().cloned())
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
 }
