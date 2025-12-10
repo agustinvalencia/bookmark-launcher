@@ -256,7 +256,7 @@ impl App {
     }
 }
 
-fn fuzzy_score(pattern: &[char], bookmark: &Bookmark) -> i64 {
+pub fn fuzzy_score(pattern: &[char], bookmark: &Bookmark) -> i64 {
     let name_score = fuzzy_match(pattern, &bookmark.name.to_lowercase());
     let url_score = fuzzy_match(pattern, &bookmark.url.to_lowercase());
     let desc_score = fuzzy_match(pattern, &bookmark.desc.to_lowercase());
@@ -280,7 +280,7 @@ fn fuzzy_score(pattern: &[char], bookmark: &Bookmark) -> i64 {
     }
 }
 
-fn fuzzy_match(pattern: &[char], text: &str) -> i64 {
+pub fn fuzzy_match(pattern: &[char], text: &str) -> i64 {
     if pattern.is_empty() {
         return 0;
     }
@@ -323,6 +323,26 @@ fn fuzzy_match(pattern: &[char], text: &str) -> i64 {
     } else {
         -1
     }
+}
+
+/// Find the best matching bookmark for a given query.
+/// Returns the URL of the best match if score > 0, None otherwise.
+pub fn find_best_match(bookmarks: &Bookmarks, query: &str) -> Option<String> {
+    let query = query.to_lowercase();
+    let query_chars: Vec<char> = query.chars().collect();
+
+    bookmarks
+        .iter()
+        .filter_map(|bm| {
+            let score = fuzzy_score(&query_chars, bm);
+            if score > 0 {
+                Some((bm.url.clone(), score))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(_, score)| *score)
+        .map(|(url, _)| url)
 }
 
 pub fn run_tui_and_open() -> Result<Option<String>> {

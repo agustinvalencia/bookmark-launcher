@@ -23,6 +23,8 @@ This installs the `bmk` binary into `~/.cargo/bin/`.
 
 ## Usage
 
+### Interactive TUI
+
 Simply run:
 
 ```bash
@@ -30,6 +32,18 @@ bmk
 ```
 
 This opens an interactive TUI with your bookmarks.
+
+### Direct Launch
+
+You can also open a bookmark directly without the TUI by providing a search query:
+
+```bash
+bmk my-repo
+bmk github
+bmk "rust docs"
+```
+
+This uses the same fuzzy matching as the TUI search and opens the best matching bookmark in your browser. If no match is found, it exits with an error.
 
 ### Keyboard Shortcuts
 
@@ -92,4 +106,5 @@ Each bookmark has:
 - [x] Interactive TUI
 - [x] Fuzzy finding
 - [x] Tag filtering
+- [x] Direct launch from CLI (e.g., `bmk my-repo`)
 - [ ] Make installation smoother (publish as crate)
